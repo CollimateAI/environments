@@ -26,7 +26,7 @@ WORKDIR /repo
 
 # Editable install with the async/dotenv extras, plus the "tests" dependency
 # group from pyproject.toml (asgiref, greenlet, pytest, python-dotenv).
-RUN pip install -e ".[async,dotenv]" "pytest<9" "werkzeug<3.2" greenlet
+RUN pip install -e ".[async,dotenv]" "pytest<9" "werkzeug==3.1.3" greenlet
 
 # The environment contract: the suite is green when the image builds.
 RUN python -m pytest -q
