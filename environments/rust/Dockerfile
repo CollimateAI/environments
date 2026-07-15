@@ -1,7 +1,7 @@
 # rust: Rust 1.79 toolchain + common native build deps + cargo-nextest.
 # The compile-and-test sandbox for Rust codegen and reward loops that grade
 # by "does it build, do the tests pass".
-FROM rust:1.79-slim
+FROM rust:1.79-slim@sha256:073c8e7ae12d2637d1d541cb0f3f9d92bfa22c97e2e45db87a9fc6a90c9a7f22
 
 # Common native deps most real crates need at build time (openssl-sys, pkg-config,
 # git dependencies), then drop the apt lists.

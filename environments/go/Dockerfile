@@ -1,6 +1,6 @@
 # go: Go 1.23 toolchain + golangci-lint. The Go coding-agent sandbox — build,
 # test, and lint-gate generated Go code in one environment.
-FROM golang:1.23
+FROM golang:1.23@sha256:60deed95d3888cc5e4d9ff8a10c54e5edc008c6ae3fba6187be6fb592e19e8c0
 
 ENV CGO_ENABLED=0 \
     GOFLAGS=-mod=mod

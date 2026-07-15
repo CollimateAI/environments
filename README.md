@@ -80,10 +80,14 @@ you can drop into a trainer today.
 2. A release tag triggers [the build workflow](.github/workflows/build.yml),
    which builds every environment and publishes it to
    `ghcr.io/collimateai/env-<name>:<tag>`.
-3. Collimate Cloud bakes the published image into a warm template. From that
-   moment it shows up in `client.images()` and every `create_sandbox("<name>")`
-   is an instant fork of a ready environment — imports done, caches hot,
-   test suites runnable.
+3. Collimate Cloud bakes the published image into a warm template. Each
+   `env.yaml` declares a **ready command** — `import torch`, a pytest
+   collection pass, a Chromium launch — that runs once at bake time, and
+   every fork inherits the finished result. That's why a fresh sandbox is
+   interactive instantly: imports resolved, caches hot, test suites
+   collected, nothing left to warm up. From that moment it shows up in
+   `client.images()` and every `create_sandbox("<name>")` is a fork of that
+   ready state.
 
 **Catalog environments work on every tier**, including free demo keys —
 browse with `client.images()`, create, exec, fork. The images are plain OCI

@@ -26,5 +26,13 @@ print(r["stdout"])
 ```
 
 Chromium is launched once during the image build (a real page render), so a
-green build guarantees a working browser. Outbound navigation follows your
-sandbox's egress policy.
+green build guarantees a working browser.
+
+## Networking
+
+Outbound navigation follows your sandbox's egress policy, which is set by
+tier: **on Pro, full networking is available** (open by default, or scoped by
+your egress rules), so browser agents navigate the real web. **Free demo
+sandboxes have no outbound network** — Chromium itself runs fine, so
+rendering local or generated content works, but external navigation (like
+the `example.com` snippet above) needs a Pro key.

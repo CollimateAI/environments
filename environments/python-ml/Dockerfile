@@ -1,7 +1,7 @@
 # python-ml: Python 3.12 + the classic scientific stack (NumPy, pandas, SciPy,
 # scikit-learn, Matplotlib). The general-purpose data/ML sandbox — fits code-exec
 # agents, analysis tasks, and classic ML without pulling in a deep-learning runtime.
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

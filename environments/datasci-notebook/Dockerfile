@@ -1,7 +1,7 @@
 # datasci-notebook: Python + a Jupyter kernel (exec-driven, no server) with
 # DuckDB, Polars, and PyArrow. Notebook-style stateful execution for dataframe
 # agents and SQL-on-files — you talk to the kernel through exec, nothing listens.
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

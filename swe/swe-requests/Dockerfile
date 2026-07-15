@@ -2,7 +2,7 @@
 # installed and the full pytest suite green at build time. An RL trainer forks
 # this environment per rollout and grades candidate patches by running pytest —
 # the suite runs fully offline (pytest-httpbin serves a local httpbin).
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
