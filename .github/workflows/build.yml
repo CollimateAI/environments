@@ -1,0 +1,79 @@
+name: build
+
+# Build and publish every catalog environment to GHCR.
+#
+# Triggers:
+#   - pushing a release tag (v*): images are published as ghcr.io/collimateai/env-<name>:<tag>
+#   - workflow_dispatch: images are published with the tag you type in (default "edge")
+#
+# The matrix is discovered from the repo layout: every directory directly under
+# environments/ or swe/ that contains a Dockerfile becomes one image, named
+# env-<directory basename>.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish"
+        required: false
+        default: "edge"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.list.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List environment directories
+        id: list
+        run: |
+          dirs=$(find environments swe -mindepth 2 -maxdepth 2 -name Dockerfile \
+                   -exec dirname {} \; | sort | jq --raw-input --slurp --compact-output 'split("\n")[:-1]')
+          echo "found: $dirs"
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.discover.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image name and tag
+        id: meta
+        run: |
+          name=$(basename "${{ matrix.dir }}")
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          echo "image=ghcr.io/collimateai/env-${name}:${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.dir }}
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha,scope=${{ matrix.dir }}
+          cache-to: type=gha,scope=${{ matrix.dir }},mode=max

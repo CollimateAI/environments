@@ -1,0 +1,9 @@
+# Keep build contexts minimal — docs and repo metadata never belong in an image.
+.git
+.github
+.worktrees
+**/*.md
+**/env.yaml
+**/tasks.jsonl.example
+LICENSE
+.dockerignore
