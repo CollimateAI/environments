@@ -1,13 +1,19 @@
 # Collimate Environments
 
-**Ready-to-fork sandbox environments. Pick one, fork it a thousand times.**
+**The environment catalog for [Collimate Cloud](https://collimate.ai) — the
+sandbox cloud built for RL post-training.**
 
-This is the public catalog behind [Collimate Cloud](https://collimate.ai) — a
-microVM sandbox cloud built around one signature move: instant copy-on-write
-forking of warm environments. Every image in this repo is baked into a warm,
-ready-to-run environment on Collimate. You don't boot it, you don't install
-into it, you don't wait for it. You fork it — in milliseconds, as many times as
-your workload needs — and every fork is a fully isolated microVM.
+Training a policy against real software means running thousands of isolated,
+reproducible environments per rollout, over and over, without the sandbox
+layer ever becoming your bottleneck. That's what Collimate is for: every image
+in this repo is baked into a warm, ready-to-run microVM environment — imports
+done, caches hot, test suites runnable. Your trainer asks for a sandbox and
+gets one instantly; ask for a thousand and copy-on-write forking means they
+cost what they touch, not a thousand boots.
+
+This catalog covers the common ground — Python/ML, Node, browsers, Rust, Go —
+and the part built specifically for RL teams: [SWE-bench-style frozen software
+worlds](#for-rl-post-training-swe-environments) you can grade rollouts against.
 
 ## 30 seconds to a thousand sandboxes
 
@@ -79,13 +85,22 @@ you can drop into a trainer today.
    is an instant fork of a ready environment — imports done, caches hot,
    test suites runnable.
 
-The images are plain OCI images. You can `docker run` any of them locally;
-they behave the same way, just without the forking.
+**Catalog environments work on every tier**, including free demo keys —
+browse with `client.images()`, create, exec, fork. The images are plain OCI
+images: you can `docker run` any of them locally; they behave the same way,
+just without the forking. (The baking step — turning an OCI image into a
+warm, ready-state microVM artifact — happens on Collimate's side when an
+image is admitted to the catalog or baked by a Pro tenant.)
 
-## Bring your own environment
+## Bring your own environment (Pro)
 
-Anything you can put in a container, Collimate can serve warm. On the Pro
-tier, bake your own image straight from the SDK:
+Everything in this repo — including environments you generate with
+[`swe/make-swe-env.sh`](swe/make-swe-env.sh) and the build workflow — is
+ordinary OCI tooling: fork this repo and publish images wherever you like,
+no gate. **Running a custom image on Collimate is a Pro feature**: baking
+your own environment is how private, team-specific worlds get onto the
+platform (demo keys are catalog-only). On the Pro tier, bake straight from
+the SDK:
 
 ```python
 client.create_template(
