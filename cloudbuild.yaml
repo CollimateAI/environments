@@ -1,0 +1,115 @@
+# Cloud Build config — build every catalog environment inside GCP and push to
+# the private Artifact Registry we control.
+#
+# Registry: us-central1-docker.pkg.dev/collimateai/collimate-environments
+#   IAM: Cloud Build compute SA (827405099373-compute@developer.gserviceaccount.com)
+#        = writer; builder + node-agent WIF principals = reader. No allUsers.
+#
+# What it does:
+#   Discovers every `environments/*/Dockerfile` and `swe/*/Dockerfile`, builds
+#   each, and pushes it to `.../env-<name>` with TWO tags:
+#     :src         mutable convenience tag (always the latest source build)
+#     :$SHORT_SHA  immutable, git-pinned — this is what catalog admission pins
+#                  by digest, so a repushed :src can never silently change what
+#                  a template bakes.
+#
+# Invoke with:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=SHORT_SHA=$(git rev-parse --short=7 HEAD)
+#
+# SHORT_SHA is a required substitution. Cloud Build populates $SHORT_SHA
+# automatically for trigger-driven builds; the GitHub Actions workflow passes it
+# explicitly (see .github/workflows/build.yml).
+
+substitutions:
+  # Registry is overridable at submit time but defaults to the real target.
+  # SHORT_SHA is a Cloud Build builtin (not declared here): trigger-driven builds
+  # populate it automatically; the GH Actions workflow passes it explicitly via
+  # --substitutions. The build step below hard-fails if it ends up empty.
+  _REGISTRY: us-central1-docker.pkg.dev/collimateai/collimate-environments
+
+options:
+  machineType: E2_HIGHCPU_8
+  # Fail loudly on any substitution typo rather than silently substituting "".
+  substitution_option: MUST_MATCH
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s
+
+steps:
+  # Single readable step: loop over every discovered Dockerfile directory and
+  # build+push each image. Using the docker cloud-builder keeps the daemon and
+  # gcloud auth (Artifact Registry) already wired up.
+  - id: build-and-push-all
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - "REGISTRY=${_REGISTRY}"
+      - "SHORT_SHA=${SHORT_SHA}"
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        # SHORT_SHA is the immutable, git-pinned tag. Require it: an empty value
+        # would push a meaningless ":" tag and defeat digest pinning.
+        if [ -z "${SHORT_SHA:-}" ]; then
+          echo "ERROR: SHORT_SHA substitution is empty. Pass --substitutions=SHORT_SHA=<7-char-sha>." >&2
+          exit 1
+        fi
+
+        # Discover every environment: any Dockerfile exactly one level under
+        # environments/ or swe/. Sorted for deterministic build order.
+        mapfile -t DIRS < <(find environments swe -mindepth 2 -maxdepth 2 -name Dockerfile -exec dirname {} \; | sort)
+
+        if [ "${#DIRS[@]}" -eq 0 ]; then
+          echo "ERROR: no environments/*/Dockerfile or swe/*/Dockerfile found." >&2
+          exit 1
+        fi
+
+        echo "Building ${#DIRS[@]} environment image(s) -> ${REGISTRY}"
+
+        for dir in "${DIRS[@]}"; do
+          name="$(basename "${dir}")"
+          repo="${REGISTRY}/env-${name}"
+          src_tag="${repo}:src"
+          sha_tag="${repo}:${SHORT_SHA}"
+
+          echo "==> ${name}: building ${dir}"
+          # Tag both refs in one build so they share layers and the digest.
+          docker build \
+            --tag "${src_tag}" \
+            --tag "${sha_tag}" \
+            "${dir}"
+
+          echo "==> ${name}: pushing ${src_tag} and ${sha_tag}"
+          docker push "${src_tag}"
+          docker push "${sha_tag}"
+        done
+
+        echo "All ${#DIRS[@]} environment image(s) built and pushed."
+
+# Declared for provenance/visibility. Cloud Build records these as build
+# artifacts. Kept in sync with the 10 environments in the repo; the loop above
+# is the source of truth for what actually gets built.
+images:
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-python-ml:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-python-ml:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-pytorch-cpu:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-pytorch-cpu:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-node:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-node:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-browser:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-browser:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-rust:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-rust:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-go:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-go:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-datasci-notebook:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-datasci-notebook:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-requests:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-requests:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-flask:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-flask:${SHORT_SHA}
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-fastapi:src
+  - us-central1-docker.pkg.dev/collimateai/collimate-environments/env-swe-fastapi:${SHORT_SHA}

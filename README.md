@@ -91,9 +91,11 @@ you can drop into a trainer today.
 1. An environment lands in this repo: a `Dockerfile`, an `env.yaml` describing
    it, and a README.
 2. A release tag triggers [the build workflow](.github/workflows/build.yml),
-   which builds every environment and publishes it to
-   `ghcr.io/collimateai/env-<name>:<tag>`.
-3. Collimate Cloud bakes the published image into a warm template. Each
+   which builds every environment inside Collimate's own cloud and publishes it
+   to an internal registry, pinned by digest. Prebuilt images are internal —
+   this repository is the public, reproducible source: `docker build` any
+   environment directory to get the exact same image.
+3. Collimate Cloud bakes the built image into a warm template. Each
    `env.yaml` declares a **ready command** — `import torch`, a pytest
    collection pass, a Chromium launch — that runs once at bake time, and
    every fork inherits the finished result. That's why a fresh sandbox is
@@ -103,11 +105,12 @@ you can drop into a trainer today.
    ready state.
 
 **Catalog environments work on every tier**, including free demo keys —
-browse with `client.images()`, create, exec, fork. The images are plain OCI
-images: you can `docker run` any of them locally; they behave the same way,
-just without the forking. (The baking step — turning an OCI image into a
-warm, ready-state microVM artifact — happens on Collimate's side when an
-image is admitted to the catalog or baked by a Pro tenant.)
+browse with `client.images()`, create, exec, fork. Every environment is
+ordinary OCI: `docker build environments/<name>` (or `swe/<name>`) locally
+and you get the exact image Collimate bakes — same base, same pinned versions,
+same ready state — just without the forking. (The baking step — turning an OCI
+image into a warm, ready-state microVM artifact — happens on Collimate's side
+when an image is admitted to the catalog or baked by a Pro tenant.)
 
 ## Bring your own environment (Pro)
 
