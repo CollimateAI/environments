@@ -46,6 +46,11 @@ steps:
     env:
       - "REGISTRY=${_REGISTRY}"
       - "SHORT_SHA=${SHORT_SHA}"
+      # Enables the BuildKit frontend so Dockerfiles carrying a
+      # `# syntax=docker/dockerfile:1.x` directive (e.g. environments/browser,
+      # which uses a RUN heredoc) build correctly. Without this the legacy
+      # builder ignores the directive and fails to parse the heredoc.
+      - "DOCKER_BUILDKIT=1"
     args:
       - -c
       - |

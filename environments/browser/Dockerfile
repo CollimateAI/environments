@@ -1,5 +1,8 @@
+# syntax=docker/dockerfile:1.7
 # browser: Playwright (Python) + Chromium, headless-ready. The browser-agent
 # sandbox — every fork gets its own isolated browser with its own state.
+# (The syntax directive above must stay the first line — it enables the BuildKit
+# frontend that supports the RUN <<'PY' heredoc used in the build-time check.)
 FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 
 ENV PYTHONUNBUFFERED=1 \
