@@ -29,13 +29,26 @@ client = connect(api_key="col_...")           # your Collimate API key
 print([img["id"] for img in client.images()])  # browse this catalog, live
 
 sb = client.create_sandbox("python-ml")        # a warm fork, ready instantly
-kids = client.fork(sb["id"], count=1000)["children"]   # 1,000 CoW copies
-
 r = client.exec(
-    kids[0]["id"],
+    sb["id"],
     commands=[["bash", "-lc", "python -c 'import sklearn; print(sklearn.__version__)'"]],
 )
 print(r["stdout"])
+
+kids = client.fork(sb["id"], count=4)["children"]   # live CoW copies, memory and all
+```
+
+For rollout width, `client.env` scopes a session: declare the fan-out up
+front, prepare the parent once, and fork the group — the SDK spreads a wide
+group across fork calls for you, and leaving the block hands the capacity
+back:
+
+```python
+with client.env("python-ml", width=1000) as env:   # capacity ready before the burst
+    with env.sandbox() as sess:
+        sess.exec(command="python -c 'import sklearn'")   # prepare once
+        with sess.fork_group(1000) as grp:                # 1,000 isolated CoW forks
+            results = grp.exec_each(code="import sklearn; print(sklearn.__version__)")
 ```
 
 Each fork shares memory and disk with its parent until it diverges, so a
@@ -110,13 +123,16 @@ the SDK:
 client.create_template(
     name="my-env",
     image="ghcr.io/you/your-image:v1",
-    width=64,           # how wide you want to fork
+    width=64,                # how wide you expect to fork — a hint, not a knob
+    expected_width=64,       # optional: pre-warm for your first rollout
 )
 ```
 
-Your private environments live alongside the catalog and fork exactly the same
-way. See the [Collimate docs](https://collimate.ai/docs) for ready-state
-checks, egress policy, and template lifecycle.
+Your private environments live alongside the catalog and fork exactly the
+same way — and `client.env("my-env", width=N)` scopes a training session on
+one, with the capacity declared up front and released when the block exits.
+See the [Collimate docs](https://collimate.ai/docs) for ready-state checks,
+egress policy, and template lifecycle.
 
 ## Contributing
 

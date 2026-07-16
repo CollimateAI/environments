@@ -59,8 +59,9 @@ COLLIMATE_API_KEY=col_... python grading.py
 ```
 
 The same loop drops into SkyRL/verl-style trainers as the reward function —
-`connect()` picks the right transport whether you're on a laptop with an API
-key or inside a rollout worker.
+`connect(api_key=...)` gives it the managed Collimate API from anywhere, and
+the SDK's graders (`grade`, `grade_batch`) and `Sandbox` run over a
+self-hosted node with the same code.
 
 ## Make your own SWE environment
 

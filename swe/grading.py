@@ -33,6 +33,8 @@ def grade_group(client, template: str, candidates: list[list[dict]], test_cmd: s
     an identical, isolated world; returns one reward per candidate.
     """
     parent = client.create_sandbox(template)["id"]
+    # One fork call is capped per plan; for GRPO-width groups use the SDK's
+    # session.fork_group(n), which spreads a wide group across calls for you.
     children = [c["id"] for c in client.fork(parent, count=len(candidates))["children"]]
     rewards: list[float] = []
     try:
