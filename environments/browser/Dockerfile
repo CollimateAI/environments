@@ -35,6 +35,76 @@ PY
 # already up, so a rollout attaches in milliseconds via connect_over_cdp instead of
 # paying a ~2-4s per-fork browser launch. This is the difference between a "warm
 # caches" template and a true live-service template.
+# The CDP endpoint itself is loopback-only by Chromium's choice: since 132 there
+# is ONLY the new headless mode, which ignores --remote-debugging-address and
+# always binds 127.0.0.1:9222 (verified on 149). Host→guest ingress
+# (ready.exposePorts DNAT) terminates at the guest NIC address, so a tiny
+# stdlib relay publishes the CDP server there: NIC:9222 → 127.0.0.1:9222.
+# Version-proof — no dependency on Chromium bind flags surviving upgrades.
+COPY <<'RELAY' /usr/local/bin/cdp-relay
+#!/usr/bin/env python3
+"""TCP relay: publish the loopback-only CDP endpoint on another address.
+
+Usage: cdp-relay [LISTEN_HOST:PORT] [TARGET_HOST:PORT]
+Defaults: 10.0.2.15:9222 (the baked guest NIC address) → 127.0.0.1:9222.
+The listen address may not exist yet when this starts (the NIC comes up on its
+own schedule at warm time), so the bind is retried for up to 10 minutes.
+"""
+import socket, sys, threading, time
+
+
+def pump(a, b):
+    try:
+        while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def main():
+    listen = sys.argv[1] if len(sys.argv) > 1 else "10.0.2.15:9222"
+    target = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1:9222"
+    lh, lp = listen.rsplit(":", 1)
+    th, tp = target.rsplit(":", 1)
+    deadline = time.time() + 600
+    while True:
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind((lh, int(lp)))
+            srv.listen(64)
+            break
+        except OSError:
+            srv.close()
+            if time.time() > deadline:
+                sys.exit(1)
+            time.sleep(0.5)
+    print("relay up", listen, "->", target, flush=True)
+    while True:
+        c, _ = srv.accept()
+        c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        try:
+            u = socket.create_connection((th, int(tp)), timeout=5)
+            u.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            c.close()
+            continue
+        threading.Thread(target=pump, args=(c, u), daemon=True).start()
+        threading.Thread(target=pump, args=(u, c), daemon=True).start()
+
+
+main()
+RELAY
+
 COPY <<'WARM' /usr/local/bin/collimate-warm
 #!/bin/sh
 set -e
@@ -46,15 +116,19 @@ ip link set lo up 2>/dev/null || true
 # e.g. /ms-playwright/chromium-1228/chrome-linux64/chrome, changes across releases).
 CH=$(python3 -c "from playwright.sync_api import sync_playwright as x; p=x().start(); print(p.chromium.executable_path); p.stop()")
 # Launch detached (survives the warm command exiting → present in the snapshot).
-# CRITICAL: use OLD --headless, NOT --headless=new — Chromium 124+ ignores
-# --remote-debugging-address under --headless=new and binds 127.0.0.1 only. Bind
-# 0.0.0.0 so the CDP endpoint is reachable both on loopback (in-guest exec) and on
-# the per-fork veth address (host→guest DNAT via ready.exposePorts). A dedicated
-# --user-data-dir keeps the profile on tmpfs. dbus warnings are harmless.
+# Chromium ≥132 ships ONLY the new headless mode: --remote-debugging-address is
+# ignored and CDP always binds 127.0.0.1:9222 — NIC-side exposure is cdp-relay's
+# job (below), never a bind flag. A dedicated --user-data-dir keeps the profile
+# on tmpfs. dbus warnings are harmless.
 setsid "$CH" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-  --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
+  --remote-debugging-port=9222 \
   --user-data-dir=/tmp/cdp-profile about:blank \
   >/var/log/cdp.log 2>&1 < /dev/null &
+# Publish CDP on the guest NIC (10.0.2.15 — the platform's baked guest address)
+# for host→guest ingress. Detached like Chromium, so it lives in the snapshot;
+# it retries its bind until the NIC address exists.
+setsid /usr/local/bin/cdp-relay 10.0.2.15:9222 127.0.0.1:9222 \
+  >/var/log/cdp-relay.log 2>&1 < /dev/null &
 # Block until CDP is actually serving, so the snapshot is only taken once the
 # browser is genuinely ready (not merely spawned).
 for i in $(seq 1 60); do
@@ -65,7 +139,7 @@ for i in $(seq 1 60); do
 done
 echo cdp-timeout >&2; exit 1
 WARM
-RUN chmod +x /usr/local/bin/collimate-warm && /usr/local/bin/collimate-warm
+RUN chmod +x /usr/local/bin/collimate-warm /usr/local/bin/cdp-relay && /usr/local/bin/collimate-warm
 
 # --- Raw-CDP fast-path navigator (Python stdlib only) ---------------------------
 # `cdp-nav <url>` drives the ALREADY-RUNNING headless Chromium directly over the
@@ -254,7 +328,14 @@ RUN chmod +x /usr/local/bin/cdp-nav \
  && /usr/local/bin/collimate-warm >/dev/null \
  && OUT=$(/usr/local/bin/cdp-nav "data:text/html,<title>cdp-ok</title>" --timeout 20) \
  && echo "cdp-nav: $OUT" \
- && case "$OUT" in cdp-ok*) : ;; *) echo "cdp-nav self-test failed" >&2; exit 1 ;; esac
+ && case "$OUT" in cdp-ok*) : ;; *) echo "cdp-nav self-test failed" >&2; exit 1 ;; esac \
+ # Relay self-test: the guest NIC does not exist in a build container, so prove
+ # the relay mechanics on a loopback alias instead — /json/version fetched
+ # THROUGH the relay must answer (the non-loopback bind path is exercised at
+ # bake by the veth connect).
+ && (setsid /usr/local/bin/cdp-relay 127.0.0.2:9222 127.0.0.1:9222 >/tmp/relay-test.log 2>&1 < /dev/null &) \
+ && sleep 1 \
+ && python3 -c "import urllib.request,json; v=json.load(urllib.request.urlopen('http://127.0.0.2:9222/json/version', timeout=5)); print('relay:', v['Browser'])"
 
 # ---------------------------------------------------------------------------------
 # Pro browser-RL note (persistent auth / secrets):
