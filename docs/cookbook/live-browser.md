@@ -43,8 +43,12 @@ CH=$(python3 -c "from playwright.sync_api import sync_playwright as x; p=x().sta
 #    Chromium ≥132 has ONLY the new headless mode: --remote-debugging-address is
 #    ignored and the CDP server always binds 127.0.0.1:9222. Don't fight it with
 #    bind flags — publish the endpoint with a relay (next step).
+#    --remote-allow-origins=* is REQUIRED for remote CDP: since Chromium 111 the
+#    DevTools WebSocket returns 403 for any handshake with an Origin header not on
+#    the allow-list, and every remote client (Playwright connect_over_cdp) sends
+#    one. Without it, remote attach fails; in-guest cdp-nav is unaffected.
 setsid "$CH" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-  --remote-debugging-port=9222 \
+  --remote-debugging-port=9222 --remote-allow-origins=* \
   --user-data-dir=/tmp/cdp-profile about:blank \
   >/var/log/cdp.log 2>&1 < /dev/null &
 
