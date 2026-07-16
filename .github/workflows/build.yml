@@ -1,79 +1,67 @@
 name: build
 
-# Build and publish every catalog environment to GHCR.
+# Build every catalog environment INSIDE GCP (Cloud Build) and push to the
+# private Artifact Registry we control:
+#   us-central1-docker.pkg.dev/collimateai/collimate-environments/env-<name>
+#
+# This workflow does NOT build images on GitHub runners and does NOT push to
+# GHCR (GHCR is retired). It only authenticates to GCP via Workload Identity
+# Federation and dispatches `gcloud builds submit` against cloudbuild.yaml, which
+# discovers and builds every environments/*/Dockerfile and swe/*/Dockerfile.
 #
 # Triggers:
-#   - pushing a release tag (v*): images are published as ghcr.io/collimateai/env-<name>:<tag>
-#   - workflow_dispatch: images are published with the tag you type in (default "edge")
+#   - pushing a release tag (v*): builds at that tagged commit
+#   - workflow_dispatch: manual build of the current ref
 #
-# The matrix is discovered from the repo layout: every directory directly under
-# environments/ or swe/ that contains a Dockerfile becomes one image, named
-# env-<directory basename>.
+# ── Required repo configuration (NOT created by this workflow) ────────────────
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   GCP_WIF_PROVIDER  full resource name of a Workload Identity *provider* that
+#                     trusts GitHub's OIDC issuer, e.g.
+#                     projects/827405099373/locations/global/workloadIdentityPools/github-actions/providers/github
+#   GCP_BUILD_SA      email of the SA the workflow impersonates, which must have
+#                     roles/cloudbuild.builds.editor (+ actAs on the Cloud Build
+#                     runtime/compute SA). e.g. gh-actions-builder@collimateai.iam.gserviceaccount.com
+#
+# WIF binding (terraform / one-time gcloud, done by the orchestrator -- see
+# docs/REGISTRY_MIGRATION.md P2): the provider above must have a GitHub OIDC
+# provider and the SA must allow impersonation from principalSet members for
+# `repo:CollimateAI/environments` (main branch + tag refs). The project's
+# existing k8s/WIF pool is NOT a GitHub-OIDC pool -- a SEPARATE github-actions
+# pool + provider is required.
+# ------------------------------------------------------------------------------
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Image tag to publish"
-        required: false
-        default: "edge"
 
+# WIF requires id-token: write so the runner can mint an OIDC token GCP trusts.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
-  discover:
+  cloud-build:
     runs-on: ubuntu-latest
-    outputs:
-      dirs: ${{ steps.list.outputs.dirs }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: List environment directories
-        id: list
-        run: |
-          dirs=$(find environments swe -mindepth 2 -maxdepth 2 -name Dockerfile \
-                   -exec dirname {} \; | sort | jq --raw-input --slurp --compact-output 'split("\n")[:-1]')
-          echo "found: $dirs"
-          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
-
-  build:
-    needs: discover
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dir: ${{ fromJSON(needs.discover.outputs.dirs) }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
+      - name: Authenticate to Google Cloud (WIF, no long-lived keys)
+        uses: google-github-actions/auth@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_BUILD_SA }}
 
-      - name: Resolve image name and tag
-        id: meta
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Submit Cloud Build
         run: |
-          name=$(basename "${{ matrix.dir }}")
-          if [ "${{ github.event_name }}" = "push" ]; then
-            tag="${GITHUB_REF_NAME}"
-          else
-            tag="${{ inputs.tag }}"
-          fi
-          echo "image=ghcr.io/collimateai/env-${name}:${tag}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.dir }}
-          push: true
-          tags: ${{ steps.meta.outputs.image }}
-          cache-from: type=gha,scope=${{ matrix.dir }}
-          cache-to: type=gha,scope=${{ matrix.dir }},mode=max
+          # Immutable, git-pinned tag the catalog admits by digest.
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "Dispatching Cloud Build for ${GITHUB_REF} at ${SHORT_SHA}"
+          gcloud builds submit \
+            --project collimateai \
+            --config cloudbuild.yaml \
+            --substitutions=SHORT_SHA="${SHORT_SHA}"
