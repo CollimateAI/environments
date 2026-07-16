@@ -128,3 +128,24 @@ that's green at build time.
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Collimate contributors.
+
+## Licensing
+
+The files in this repository (Dockerfiles, `env.yaml` definitions, scripts) are
+licensed under [Apache-2.0](LICENSE).
+
+The container images built from these definitions **bundle third-party software
+under its own licenses**, which are retained inside each image (Python packages
+keep their license files under `*.dist-info/licenses/`; the SWE environments
+clone the upstream repository — including its `LICENSE` file — at a pinned
+commit into `/repo`). Notable upstream licenses: Flask (BSD-3-Clause),
+Requests (Apache-2.0), FastAPI (MIT), PyTorch (BSD-style), Transformers and
+Datasets (Apache-2.0), NumPy/SciPy/pandas/scikit-learn (BSD-3-Clause),
+Matplotlib (PSF-based), Node.js (MIT), Go (BSD-3-Clause), and the Python and
+Debian base images under their respective licenses. Nothing in this repository
+relicenses that software; using these images means accepting the bundled
+projects' own terms.
+
+The SWE environments pin public open-source repositories at exact commits for
+reproducible RL grading; they contain only code those projects publish
+publicly.
