@@ -120,8 +120,13 @@ CH=$(python3 -c "from playwright.sync_api import sync_playwright as x; p=x().sta
 # ignored and CDP always binds 127.0.0.1:9222 — NIC-side exposure is cdp-relay's
 # job (below), never a bind flag. A dedicated --user-data-dir keeps the profile
 # on tmpfs. dbus warnings are harmless.
+# --remote-allow-origins=* is REQUIRED for remote CDP: since Chromium 111 the
+# DevTools WebSocket rejects (HTTP 403) any handshake carrying an Origin header
+# that is not allow-listed (DNS-rebinding hardening). A remote client (Playwright
+# connect_over_cdp, the ingress broker) always sends an Origin, so without this
+# the /devtools/browser/<uuid> upgrade fails. In-guest cdp-nav is unaffected.
 setsid "$CH" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-  --remote-debugging-port=9222 \
+  --remote-debugging-port=9222 --remote-allow-origins=* \
   --user-data-dir=/tmp/cdp-profile about:blank \
   >/var/log/cdp.log 2>&1 < /dev/null &
 # Publish CDP on the guest NIC (10.0.2.15 — the platform's baked guest address)
