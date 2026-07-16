@@ -73,12 +73,45 @@ proves Chromium launches and CDP answers before the image is ever baked.
 ## Using it from the SDK
 
 A rollout **attaches** to the already-running browser — it does not launch one.
+There are two ways to attach: the **raw-CDP fast path** (fastest — no Node driver)
+and **Playwright** (convenient). Both talk to the same live browser on `:9222`.
+
+### Fast path: raw CDP (`cdp-nav`)
+
+The image bakes a tiny, dependency-free (Python-stdlib-only) CDP client at
+`/usr/local/bin/cdp-nav` ([Dockerfile](../../environments/browser/Dockerfile)). It
+speaks the Chrome DevTools Protocol websocket directly — connects to the resident
+browser, sends `Page.navigate`, waits for the load event, and prints the page title
+and final URL. Because it starts **no Node driver**, attach-and-navigate is an order
+of magnitude faster than Playwright (see [latency](#a-note-on-latency) below).
 
 ```python
 from collimate_rl import connect
 
 client = connect(api_key="col_...")
 
+sb = client.create_sandbox("browser")
+# Drive the live browser directly over CDP — no per-fork launch, no Node driver.
+result = client.exec(
+    sb["id"],
+    commands=[["cdp-nav", "https://example.com"]],
+    timeout_seconds=60,
+)
+print(result["stdout"])          # -> "Example Domain\thttps://example.com/"
+client.delete_sandbox(sb["id"])
+```
+
+Pass `--expr <js>` to evaluate JavaScript in the loaded page instead of the default
+title/URL (e.g. `["cdp-nav", "https://example.com", "--expr", "document.body.innerText"]`),
+or `--port` / `--timeout` to override the defaults (`9222` / `30s`).
+
+### Convenient: Playwright
+
+`connect_over_cdp` gives you the full Playwright API — worth its extra latency when
+you need rich page interaction (selectors, waits, screenshots) rather than a single
+navigate.
+
+```python
 # The rollout body runs inside the sandbox. It connects to the live browser that
 # the ready-state snapshot is already running — no per-fork browser launch.
 ROLLOUT = """
@@ -92,34 +125,41 @@ with sync_playwright() as pw:
     browser.close()                            # closes the connection, not the browser
 """
 
-sb = client.create_sandbox("browser")
 result = client.exec(sb["id"], commands=[["python3", "-c", ROLLOUT]], timeout_seconds=60)
-print(result["stdout"])
-client.delete_sandbox(sb["id"])
-```
-
-Fan a warmed parent out across many rollouts with `fork` — every child inherits the
-same live browser:
-
-```python
-children = client.fork(sb["id"], count=64)["children"]
-for child in children:
-    client.exec(child["id"], commands=[["python3", "-c", ROLLOUT]], timeout_seconds=60)
 ```
 
 Give each rollout its own `new_context()` (fresh cookies/storage) and close the
 **context**, not the browser — the browser is the shared warm service.
 
+### Fan out with fork
+
+Fan a warmed parent out across many rollouts with `fork` — every child inherits the
+same live browser and can drive it via either path:
+
+```python
+children = client.fork(sb["id"], count=64)["children"]
+for child in children:
+    client.exec(child["id"], commands=[["cdp-nav", "https://example.com"]], timeout_seconds=60)
+```
+
 ## A note on latency
 
 Attaching to the pre-running browser skips the ~2s Chromium spawn a cold
-`chromium.launch()` pays. Two ways to attach, fastest last:
+`chromium.launch()` pays. The two attach paths differ by roughly another order of
+magnitude. Measured in a `browser` sandbox on Collimate prod (median of 3 runs,
+server-side in-guest exec time, navigating to a fixed page so the number reflects
+attach + navigate, not network variance):
 
-- **Playwright** `connect_over_cdp(...)` — convenient, but starts Playwright's own
-  Node driver each call (~1–2s). Still meaningfully faster than a cold launch.
-- **Raw CDP** — talk to `ws://127.0.0.1:9222` with a stdlib WebSocket client and send
-  `Page.navigate` directly. No Node driver, so attach-and-drive is milliseconds. Use
-  this when per-rollout latency is the bottleneck.
+| Attach path | Command | Median attach + navigate |
+|---|---|---|
+| **Raw CDP** (`cdp-nav`) | `["cdp-nav", url]` | **~235 ms** |
+| **Playwright** `connect_over_cdp` | `["python3", "-c", rollout]` | **~1350 ms** |
+
+That is **~5.7× faster** for the raw path. Almost all of Playwright's ~1.35s is its
+Node driver booting on every call; the raw-CDP path pays only Python startup plus the
+CDP round-trip (the attach + `Page.navigate` itself is well under 100 ms). Reach for
+`cdp-nav` when per-rollout latency is the bottleneck; reach for Playwright when you
+need its full page-interaction API.
 
 ## Pro browser-RL: authentication & secrets
 

@@ -67,13 +67,202 @@ echo cdp-timeout >&2; exit 1
 WARM
 RUN chmod +x /usr/local/bin/collimate-warm && /usr/local/bin/collimate-warm
 
+# --- Raw-CDP fast-path navigator (Python stdlib only) ---------------------------
+# `cdp-nav <url>` drives the ALREADY-RUNNING headless Chromium directly over the
+# Chrome DevTools Protocol websocket. Unlike Playwright's connect_over_cdp(), it
+# starts no Node driver — it speaks CDP with a tiny stdlib WebSocket client — so
+# attach-and-navigate is milliseconds instead of the ~1.5-2s Playwright pays to
+# boot its own driver on every call. Use this when per-rollout latency is the
+# bottleneck. Depends only on the resident browser; no extra packages.
+#
+#   cdp-nav <url> [--port 9222] [--timeout 30] [--expr <js>]
+#
+# Prints "<title>\t<current-url>" of the loaded page by default, or the --expr
+# Runtime.evaluate result if given; exit 0 once the page load event fires.
+COPY <<'CDPNAV' /usr/local/bin/cdp-nav
+#!/usr/bin/env python3
+# Collimate — raw-CDP navigate client (stdlib only, no websocket package, no Node).
+import base64, json, os, socket, struct, sys, time, urllib.request
+
+
+def http_get(url, timeout=5):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read().decode()
+
+
+def find_page_ws(host, port, timeout=10):
+    """Return a page target's webSocketDebuggerUrl, creating one if none exists."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            for t in json.loads(http_get(f"http://{host}:{port}/json")):
+                if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+                    return t["webSocketDebuggerUrl"]
+            # No page tab yet -> ask the browser to open one.
+            try:
+                t = json.loads(http_get(f"http://{host}:{port}/json/new?about:blank"))
+                if t.get("webSocketDebuggerUrl"):
+                    return t["webSocketDebuggerUrl"]
+            except Exception:
+                pass
+        except Exception:
+            pass
+        time.sleep(0.05)
+    raise RuntimeError(f"no CDP page target on {host}:{port} within {timeout}s")
+
+
+class WS:
+    """Minimal client-side WebSocket for the CDP page endpoint."""
+
+    def __init__(self, url, timeout=30):
+        # url: ws://host:port/devtools/page/<id>
+        body = url[len("ws://"):]
+        hostport, path = body.split("/", 1)
+        path = "/" + path
+        host, port = hostport.split(":")
+        self.s = socket.create_connection((host, int(port)), timeout=timeout)
+        self.s.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = (f"GET {path} HTTP/1.1\r\nHost: {hostport}\r\n"
+               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        self.s.sendall(req.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            c = self.s.recv(4096)
+            if not c:
+                raise RuntimeError("CDP ws handshake closed")
+            buf += c
+        if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+            raise RuntimeError("CDP ws handshake failed: " + buf[:80].decode("latin1"))
+        self.rest = buf.split(b"\r\n\r\n", 1)[1]
+
+    def _recv(self, n):
+        while len(self.rest) < n:
+            c = self.s.recv(65536)
+            if not c:
+                raise RuntimeError("CDP ws closed")
+            self.rest += c
+        out, self.rest = self.rest[:n], self.rest[n:]
+        return out
+
+    def send(self, obj):
+        payload = json.dumps(obj).encode()
+        mask = os.urandom(4)
+        hdr = bytearray([0x81])  # FIN + text frame
+        n = len(payload)
+        if n < 126:
+            hdr.append(0x80 | n)
+        elif n < 65536:
+            hdr.append(0x80 | 126); hdr += struct.pack(">H", n)
+        else:
+            hdr.append(0x80 | 127); hdr += struct.pack(">Q", n)
+        hdr += mask
+        self.s.sendall(bytes(hdr) + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def recv(self):
+        """Return one decoded JSON message (handles ping/pong + fragmentation)."""
+        data = b""
+        while True:
+            b0, b1 = self._recv(2)
+            op = b0 & 0x0f
+            ln = b1 & 0x7f
+            if ln == 126:
+                ln = struct.unpack(">H", self._recv(2))[0]
+            elif ln == 127:
+                ln = struct.unpack(">Q", self._recv(8))[0]
+            frame = self._recv(ln) if ln else b""
+            if op == 0x9:      # ping -> pong
+                self._pong(frame); continue
+            if op == 0x8:      # close
+                raise RuntimeError("CDP ws closed by browser")
+            data += frame
+            if b0 & 0x80:      # FIN
+                return json.loads(data.decode())
+
+    def _pong(self, payload):
+        mask = os.urandom(4)
+        hdr = bytes([0x8a, 0x80 | len(payload)]) + mask
+        self.s.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.stderr.write("usage: cdp-nav <url> [--port N] [--timeout S] [--expr JS]\n")
+        return 2
+    url = args[0]
+    port, timeout, expr = 9222, 30, None
+    i = 1
+    while i < len(args):
+        if args[i] == "--port":
+            port = int(args[i + 1]); i += 2
+        elif args[i] == "--timeout":
+            timeout = int(args[i + 1]); i += 2
+        elif args[i] == "--expr":
+            expr = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    ws_url = find_page_ws("127.0.0.1", port, timeout=timeout)
+    ws = WS(ws_url, timeout=timeout)
+    ws.send({"id": 1, "method": "Page.enable"})
+    ws.send({"id": 2, "method": "Page.navigate", "params": {"url": url}})
+
+    # Wait for the load event (or frameStoppedLoading) before reading the page.
+    deadline = time.time() + timeout
+    loaded = False
+    while time.time() < deadline:
+        msg = ws.recv()
+        if msg.get("id") == 2 and "error" in msg:
+            sys.stderr.write("navigate error: %s\n" % msg["error"]); return 1
+        if msg.get("method") in ("Page.loadEventFired", "Page.frameStoppedLoading"):
+            loaded = True; break
+    if not loaded:
+        sys.stderr.write("timed out waiting for page load\n"); return 1
+
+    # Read a result: the caller's --expr, or the page title + current URL by default.
+    expression = expr or "JSON.stringify([document.title, location.href])"
+    ws.send({"id": 3, "method": "Runtime.evaluate",
+             "params": {"expression": expression, "returnByValue": True}})
+    while time.time() < deadline:
+        msg = ws.recv()
+        if msg.get("id") == 3:
+            if "error" in msg:
+                sys.stderr.write("eval error\n"); return 1
+            val = msg.get("result", {}).get("result", {}).get("value")
+            if expr is None:
+                try:
+                    title, cur = json.loads(val)
+                    sys.stdout.write(f"{title}\t{cur}\n")
+                except Exception:
+                    sys.stdout.write((val if isinstance(val, str) else json.dumps(val)) + "\n")
+            else:
+                sys.stdout.write((val if isinstance(val, str) else json.dumps(val)) + "\n")
+            return 0
+    sys.stderr.write("timed out waiting for result\n"); return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+CDPNAV
+# Self-test the fast path at build time. Each RUN is a fresh container — the
+# Chromium the warm script launched in an earlier layer does NOT persist here, so
+# start a browser in THIS layer (the warm script blocks until CDP answers), then
+# navigate to a data: URL (no network needed at build time) and check the title.
+RUN chmod +x /usr/local/bin/cdp-nav \
+ && /usr/local/bin/collimate-warm >/dev/null \
+ && OUT=$(/usr/local/bin/cdp-nav "data:text/html,<title>cdp-ok</title>" --timeout 20) \
+ && echo "cdp-nav: $OUT" \
+ && case "$OUT" in cdp-ok*) : ;; *) echo "cdp-nav self-test failed" >&2; exit 1 ;; esac
+
 # ---------------------------------------------------------------------------------
 # Pro browser-RL note (persistent auth / secrets):
 #   Do NOT bake cookies, tokens, or credentials into this image or the ready state —
 #   the snapshot is a shared catalog artifact. Instead:
 #     • Inject secrets at RUNTIME via Collimate's secret store (write-only, sealed to
-#       the node; they reach the sandbox's credential proxy, never the artifact):
-#         client.secrets.put("SITE_TOKEN", ...)  then reference at create/exec time.
+#       the node; they reach the sandbox's credential proxy, never the artifact).
+#       See the Secrets guide at https://docs.collimate.ai for the current API.
 #     • For a logged-in browser state, do the login INSIDE the rollout on first use
 #       and persist storage_state to the sandbox's own disk (per-fork, never shared),
 #       or drive auth through the injected secret. Egress must be open (Pro tier).
