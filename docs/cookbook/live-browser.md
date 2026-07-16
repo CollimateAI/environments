@@ -24,7 +24,7 @@ is taken only once it is ready — not merely spawned.
 ## The warm script
 
 The whole recipe is one baked script, `/usr/local/bin/collimate-warm`
-([Dockerfile](../../environments/browser/Dockerfile)). Three details matter, and
+([Dockerfile](../../environments/browser/Dockerfile)). Five details matter, and
 each is a common way to get this wrong:
 
 ```sh
@@ -40,15 +40,23 @@ ip link set lo up 2>/dev/null || true
 CH=$(python3 -c "from playwright.sync_api import sync_playwright as x; p=x().start(); print(p.chromium.executable_path); p.stop()")
 
 # 3. Launch DETACHED (setsid) so it outlives this script and lands in the snapshot.
-#    Use OLD --headless, NOT --headless=new: on Chromium 124+ the new mode ignores
-#    --remote-debugging-address and binds 127.0.0.1 only. Bind 0.0.0.0 so the CDP
-#    endpoint is reachable both in-guest (127.0.0.1) and on the fork's veth address.
+#    Chromium ≥132 has ONLY the new headless mode: --remote-debugging-address is
+#    ignored and the CDP server always binds 127.0.0.1:9222. Don't fight it with
+#    bind flags — publish the endpoint with a relay (next step).
 setsid "$CH" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-  --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
+  --remote-debugging-port=9222 \
   --user-data-dir=/tmp/cdp-profile about:blank \
   >/var/log/cdp.log 2>&1 < /dev/null &
 
-# 4. Block until CDP actually answers, so the snapshot captures a READY browser.
+# 4. Publish the loopback-only CDP endpoint on the guest NIC (10.0.2.15) so
+#    connect-from-outside (`ready.exposePorts` → per-fork DNAT → NIC) reaches it.
+#    cdp-relay is a ~40-line baked stdlib TCP relay: NIC:9222 → 127.0.0.1:9222,
+#    detached like Chromium so it lives in the snapshot, retrying its bind while
+#    the NIC comes up. Version-proof: no dependency on Chromium bind behavior.
+setsid /usr/local/bin/cdp-relay 10.0.2.15:9222 127.0.0.1:9222 \
+  >/var/log/cdp-relay.log 2>&1 < /dev/null &
+
+# 5. Block until CDP actually answers, so the snapshot captures a READY browser.
 for i in $(seq 1 60); do
   if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9222/json/version', timeout=1)" 2>/dev/null; then
     echo cdp-ready; exit 0
@@ -68,7 +76,10 @@ cdp_endpoint: http://127.0.0.1:9222
 ```
 
 The image **runs this script at build time as a self-test**, so a green build
-proves Chromium launches and CDP answers before the image is ever baked.
+proves Chromium launches and CDP answers before the image is ever baked — and it
+fetches `/json/version` **through the relay** too, so the NIC-side publish path is
+proven, not assumed. (That last check exists because the loopback-only poll used
+to pass while Chromium silently ignored its bind flag.)
 
 ## Using it from the SDK
 
